@@ -11,7 +11,8 @@ from binaryninja import (
     RegisterType,
 )
 
-from .instructions import IMMEDIATE_MODE, INDIRECT_AUTOINCREMENT_MODE, REGISTER_MODE
+from .instructions import IMMEDIATE_MODE, INDIRECT_AUTOINCREMENT_MODE, REGISTER_MODE, \
+        BYTE_WIDTH, WORD_WIDTH
 
 SourceOperandsIL: List[
     Callable[
@@ -31,10 +32,10 @@ SourceOperandsIL: List[
     lambda il, width, reg, value: il.load(width, il.reg(2, reg)),
     # SYMBOLIC_MODE
     lambda il, width, reg, value: il.load(
-        width, il.add(2, il.reg(2, "pc"), il.const(2, value))
+        width, il.add(WORD_WIDTH, il.reg(2, "pc"), il.const(2, value))
     ),
     # ABSOLUTE_MODE
-    lambda il, width, reg, value: il.load(width, il.const_pointer(2, value)),
+    lambda il, width, reg, value: il.load(width, il.const(2, value)),
     # IMMEDIATE_MODE
     lambda il, width, reg, value: il.const(width, value),
     # CONSTANT_MODE0
@@ -49,25 +50,49 @@ SourceOperandsIL: List[
     lambda il, width, reg, value: il.const(width, 8),
     # CONSTANT_MODE_NEG1
     lambda il, width, reg, value: il.const(width, -1),
+    # OFFSET (Not quite a real addressing mode, only used for jumps)
+    # the calculation is:
+    #   instr_addr + 2 + (offset * 2)
+    # binary ninja already handles the "instr_addr + 2" portion by getting the 
+    # current "pc" register value
+    lambda il, width, reg, value: il.load(
+        width, il.add(2, il.reg(2, "pc"), il.mult(2, il.const(2, value), 2))
+    ),
 ]
 
 DestOperandsIL = [
     # REGISTER_MODE
-    lambda il, width, reg, value, src: il.set_reg(2, reg, src),
+    lambda il, width, reg, value, src: il.set_reg(width, reg, src),
     # INDEXED_MODE
     lambda il, width, reg, value, src: il.store(
         width, il.add(2, il.reg(2, reg), il.const(2, value)), src
     ),
-    # INDIRECT_REGISTER_MODE
+    # INDIRECT_REGISTER_MODE (Not valid for destination)
     lambda il, width, reg, value, src: il.unimplemented(),
-    # INDIRECT_AUTOINCREMENT_MODE
+    # INDIRECT_AUTOINCREMENT_MODE (Not valid for destination)
     lambda il, width, reg, value, src: il.unimplemented(),
     # SYMBOLIC_MODE
-    lambda il, width, reg, value, src: il.unimplemented(),
+    lambda il, width, reg, value, src: il.store(
+        width, il.add(2, il.reg(2, "pc"), il.const(2, value)), src
+    ),
     # ABSOLUTE_MODE
     lambda il, width, reg, value, src: il.store(width, il.const_pointer(2, value), src),
     # IMMEDIATE_MODE
-    lambda il, width, reg, value, src: il.store(width, il.const_pointer(2, value), src),
+    lambda il, width, reg, value, src: il.store(width, il.const(width, value), src),
+    # CONSTANT_MODE0 (Not valid for destination)
+    lambda il, width, reg, value, src: il.unimplemented(),
+    # CONSTANT_MODE1 (Not valid for destination)
+    lambda il, width, reg, value, src: il.unimplemented(),
+    # CONSTANT_MODE2 (Not valid for destination)
+    lambda il, width, reg, value, src: il.unimplemented(),
+    # CONSTANT_MODE4 (Not valid for destination)
+    lambda il, width, reg, value, src: il.unimplemented(),
+    # CONSTANT_MODE8 (Not valid for destination)
+    lambda il, width, reg, value, src: il.unimplemented(),
+    # CONSTANT_MODE_NEG1 (Not valid for destination)
+    lambda il, width, reg, value, src: il.unimplemented(),
+    # OFFSET (only used for jumps, also not valid for a destination operand)
+    lambda il, width, reg, value, src: il.unimplemented(),
 ]
 
 
@@ -302,7 +327,7 @@ class Lifter:
         )
 
     @staticmethod
-    def lift_jhs(il, instr):
+    def lift_jc(il, instr):
         cond_branch(
             il,
             il.flag_condition(LowLevelILFlagCondition.LLFC_ULE),
@@ -318,7 +343,7 @@ class Lifter:
         )
 
     @staticmethod
-    def lift_jlo(il, instr):
+    def lift_jnc(il, instr):
         cond_branch(
             il,
             il.flag_condition(LowLevelILFlagCondition.LLFC_UGT),
@@ -355,25 +380,18 @@ class Lifter:
 
     @staticmethod
     def lift_mov(il, instr):
-        # avoid setting stack pointer to a constant
-        if (
-            instr.src.mode == IMMEDIATE_MODE
-            and instr.dst.target == "sp"
-            and instr.dst.mode == REGISTER_MODE
-        ):
-            return
+        #src = SourceOperandsIL[instr.src.mode](
+        #    il, instr.src.width, instr.src.target, instr.src.value
+        #)
 
-        src = SourceOperandsIL[instr.src.mode](
-            il, instr.src.width, instr.src.target, instr.src.value
-        )
+        #il.append(
+        #    DestOperandsIL[instr.dst.mode](
+        #        il, instr.dst.width, instr.dst.target, instr.dst.value, src
+        #    )
+        #)
 
-        il.append(
-            DestOperandsIL[instr.dst.mode](
-                il, instr.dst.width, instr.dst.target, instr.dst.value, src
-            )
-        )
-
-        Lifter.autoincrement(il, instr.src)
+        #Lifter.autoincrement(il, instr.src)
+        il.append(il.unimplemented())
 
     @staticmethod
     def lift_pop(il, instr):

@@ -51,6 +51,8 @@ class MSP430(Architecture):
         LowLevelILFlagCondition.LLFC_POS: ['n']
     }
 
+    _cache = {}
+
     def get_instruction_info(self, data, addr):
         instr = Instruction.decode(data, addr)
 
@@ -96,6 +98,6 @@ class MSP430(Architecture):
             if next_instr.mnemonic == "jmp" and next_instr.src.value == addr:
                 instr.mnemonic = "hlt"
 
-        Lifter.lift(il, instr)
+        #Lifter.lift(il, instr)
 
         return instr.length

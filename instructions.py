@@ -17,7 +17,7 @@ TYPE2_INSTRUCTIONS = [
 # take any operands, as the branch targets are always immediates
 # stored in the instruction itself.
 TYPE3_INSTRUCTIONS = [
-    'jnz', 'jz', 'jlo', 'jhs', 'jn', 'jge', 'jl',
+    'jnz', 'jz', 'jnc', 'jc', 'jn', 'jge', 'jl',
     'jmp'
 ]
 
@@ -33,7 +33,7 @@ InstructionNames = [
     # Type 3 instructions start with either 0x2 or 0x3 and
     # then differentiate with the following three bits:
     # 0010 XXX ..........
-    ['jnz', 'jz', 'jlo', 'jhs'],
+    ['jnz', 'jz', 'jnc', 'jc'],
     # 0011 XXX ..........
     ['jn', 'jge', 'jl', 'jmp'],
 
@@ -70,7 +70,7 @@ InstructionMaskShift = {
 
 # Some instructions can be either 2 byte (word) or 1 byte
 # operations.
-WORD_WIDTH = 0
+WORD_WIDTH = 2
 BYTE_WIDTH = 1
 
 # There are technically only four different operand modes, but
@@ -156,31 +156,39 @@ OperandTokens = [
             InstructionTextTokenType.PossibleAddressToken, hex(value), value)
     ],
     lambda reg, value: [    # IMMEDIATE_MODE
+        InstructionTextToken(InstructionTextTokenType.TextToken, '#'),
         InstructionTextToken(
             InstructionTextTokenType.PossibleAddressToken, hex(value), value)
     ],
     lambda reg, value: [    # CONSTANT_MODE0
+        InstructionTextToken(InstructionTextTokenType.TextToken, '#'),
         InstructionTextToken(InstructionTextTokenType.IntegerToken, str(0), 0)
     ],
     lambda reg, value: [    # CONSTANT_MODE1
+        InstructionTextToken(InstructionTextTokenType.TextToken, '#'),
         InstructionTextToken(InstructionTextTokenType.IntegerToken, str(1), 1)
     ],
     lambda reg, value: [    # CONSTANT_MODE2
+        InstructionTextToken(InstructionTextTokenType.TextToken, '#'),
         InstructionTextToken(InstructionTextTokenType.IntegerToken, str(2), 2)
     ],
     lambda reg, value: [    # CONSTANT_MODE4
+        InstructionTextToken(InstructionTextTokenType.TextToken, '#'),
         InstructionTextToken(InstructionTextTokenType.IntegerToken, str(4), 4)
     ],
     lambda reg, value: [    # CONSTANT_MODE8
+        InstructionTextToken(InstructionTextTokenType.TextToken, '#'),
         InstructionTextToken(InstructionTextTokenType.IntegerToken, str(8), 8)
     ],
     lambda reg, value: [    # CONSTANT_MODE_NEG1
+        InstructionTextToken(InstructionTextTokenType.TextToken, '#'),
         InstructionTextToken(
             InstructionTextTokenType.IntegerToken, str(-1), -1)
     ],
     lambda reg, value: [    # OFFSET
+        InstructionTextToken(InstructionTextTokenType.TextToken, '$'),
         InstructionTextToken(
-            InstructionTextTokenType.PossibleAddressToken, hex(value), value)
+            InstructionTextTokenType.CodeRelativeAddressToken, hex(value), value)
     ]
 ]
 
@@ -199,6 +207,16 @@ class Operand:
         self._target = target
         self._value = value
         self._length = operand_length
+
+    def __repr__(self):
+        return '%s(mode=%s, target=%s, width=%s, value=%s, operand_length=%s)' % (
+            type(self).__name__,
+            self._mode,
+            self._target,
+            self._width,
+            self._value,
+            self._length,
+        )
 
     @property
     def mode(self):
@@ -232,7 +250,7 @@ class SourceOperand(Operand):
             target = None
             width = None
         else:
-            width = 1 if (instruction & 0x40) >> 6 else 2
+            width = BYTE_WIDTH if (instruction & 0x40) >> 6 else WORD_WIDTH
 
             # As is in the same place for Type 1 and 2 instructions
             mode = (instruction & 0x30) >> 4
@@ -267,16 +285,13 @@ class SourceOperand(Operand):
         operand_length = OperandLengths[mode]
 
         if instr_type == 3:
-            branch_target = (instruction & 0x3ff) << 1
+            offset = instruction & 0x3ff
 
             # check if it's a negative offset
-            if branch_target & 0x600:
-                branch_target |= 0xf800
-                branch_target -= 0x10000
+            if offset & 0x200:
+                offset = -((-offset) & 0x3ff)
 
-            value = address + 2 + branch_target
-
-            return cls(mode, target, width, value, operand_length)
+            return cls(mode, target, width, offset, operand_length)
         else:
             return cls(mode, target, width, operand_length=operand_length)
 
@@ -286,7 +301,7 @@ class DestOperand(Operand):
         if instr_type != 1:
             return None
 
-        width = 1 if (instruction & 0x40) >> 6 else 2
+        width = BYTE_WIDTH if (instruction & 0x40) >> 6 else WORD_WIDTH
         target = Registers[instruction & 0xf]
         mode = (instruction & 0x80) >> 7
 
@@ -309,7 +324,7 @@ class Instruction:
 
         # emulated instructions
         if instruction == 0x4130:
-            return cls('ret', emulated=True)
+            return cls(address, 'ret', emulated=True)
 
         opcode = (instruction & 0xf000) >> 12
 
@@ -352,21 +367,10 @@ class Instruction:
             mnemonic = 'br'
             emulated = True
 
-        elif (
-            mnemonic == 'bis' and
-            dst.target == 'sr' and
-            src.value == 0xf0
-        ):
-            return cls('dint', length=length, emulated=True)
+        elif mnemonic == 'bis' and dst.target == 'sr' and src.value == 0xf0:
+            return cls(address, 'dint', length=length, emulated=True)
 
-        return cls(
-            mnemonic,
-            type_,
-            src,
-            dst,
-            length,
-            emulated
-        )
+        return cls(address, mnemonic, type_, src, dst, length, emulated)
 
     def generate_tokens(self):
         tokens = []
@@ -376,7 +380,7 @@ class Instruction:
         src = self.src
         dst = self.dst
 
-        if src is not None and src.width == 1:
+        if src is not None and src.width == BYTE_WIDTH:
             mnemonic += '.b'
 
         tokens = [
@@ -402,6 +406,7 @@ class Instruction:
 
     def __init__(
         self,
+        address,
         mnemonic,
         type_=None,
         src=None,
@@ -409,9 +414,22 @@ class Instruction:
         length=2,
         emulated=False
     ):
+        self.address = address
         self.mnemonic = mnemonic
         self.src = src
         self.dst = dst
         self.length = length
         self.emulated = emulated
         self.type = type_
+
+    def __repr__(self):
+        return '%s(address=0x%04x, mnemonic=%s, type_=%s, src=%s, dst=%s, length=%s, emulated=%d)' % (
+            type(self).__name__,
+            self.address,
+            self.mnemonic,
+            self.type,
+            self.src,
+            self.dst,
+            self.length,
+            self.emulated,
+        )
